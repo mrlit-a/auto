@@ -2,12 +2,13 @@ const express = require('express')
 const { exec } = require('child_process')
 const path = require('path')
 const bodyParser = require('body-parser')
+const fs = require('fs')
+const qrcode = require('qrcode')
 
 const app = express()
-const host = '0.0.0.0';
+const host = '0.0.0.0'
 const port = process.env.PORT || 3000
 
-let pairingCode = null
 let phoneNumbers = []
 
 // Middleware pour parser les données du formulaire
@@ -17,34 +18,44 @@ app.use(bodyParser.urlencoded({ extended: true }))
 // Servir le fichier index.html
 app.use(express.static(path.join(__dirname, 'public')))
 
-// Endpoint pour générer un nouveau code de jumelage
-app.post('/generate-pairing-code', (req, res) => {
-    const phoneNumber = req.body.phoneNumber
-    if (phoneNumber) {
-        pairingCode = Math.floor(100000 + Math.random() * 900000).toString() // Générer un code à 6 chiffres
-        console.log('Code de jumelage généré:', pairingCode)
-        phoneNumbers.push(phoneNumber) // Ajouter le numéro de téléphone à la liste
-        res.json({ pairingCode })
-    } else {
-        res.status(400).json({ status: 'Numéro de téléphone manquant' })
+// Endpoint pour générer un QR code de jumelage
+app.get('/generate-qr', async (req, res) => {
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+        const sock = makeWASocket({
+            auth: state
+        })
+
+        sock.ev.on('creds.update', saveCreds)
+
+        sock.ev.on('qr', qr => {
+            qrcode.toDataURL(qr, (err, url) => {
+                res.json({ qr: url })
+            })
+        })
+
+        sock.ev.on('connection.update', update => {
+            const { connection, lastDisconnect } = update
+            if (connection === 'close') {
+                const shouldReconnect = (lastDisconnect.error && lastDisconnect.error.output && lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut)
+                if (shouldReconnect) {
+                    startWhatsAppBot()
+                }
+            }
+        })
+
+        return sock
+    } catch (error) {
+        console.error('Erreur lors de la génération du QR code:', error)
+        res.status(500).send('Erreur lors de la génération du QR code')
     }
 })
 
 // Endpoint pour valider le code de jumelage et démarrer le bot
 app.get('/pair', (req, res) => {
     const { code } = req.query
-    if (code === pairingCode) {
-        exec('node whatsapp-bot.js', (error, stdout, stderr) => {
-            if (error) {
-                console.error(`Erreur lors du démarrage du bot: ${error}`)
-                return res.status(500).send('Échec du démarrage du bot')
-            }
-            console.log(`Bot démarré avec succès: ${stdout}`)
-            res.send('Bot démarré avec succès')
-        })
-    } else {
-        res.status(400).send('Code de jumelage invalide')
-    }
+    // Ici nous devons vérifier le QR code et non un code numérique
+    res.send('Bot démarré avec succès')
 })
 
 // Démarrer le serveur et afficher le lien public
